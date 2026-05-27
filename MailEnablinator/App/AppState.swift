@@ -17,9 +17,9 @@ final class AppState {
     var menuBarIcon: String {
         switch connectionState {
         case .disconnected: "envelope.fill"
-        case .connecting: "envelope.badge"
+        case .connecting: "envelope.stack.fill"
         case .idle: "envelope"
-        case .processing: "envelope.open"
+        case .processing: "envelope.open.fill"
         case .error: "envelope.badge.fill"
         }
     }
