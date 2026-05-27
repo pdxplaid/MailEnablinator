@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(swiftlint version *)",
+      "WebSearch",
+      "WebFetch(domain:dev.to)"
+    ]
+  }
+}
