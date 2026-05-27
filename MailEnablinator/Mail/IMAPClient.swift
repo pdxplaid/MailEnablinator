@@ -52,9 +52,9 @@ actor IMAPClient {
         } else {
             try await login()
         }
-        if caps.contains("NAMESPACE") {
-            try await detectNamespace()
-        }
+        // Always probe NAMESPACE — Dreamhost and others support it without advertising
+        // it in CAPABILITY. detectNamespace() silently ignores a BAD/NO response.
+        try await detectNamespace()
     }
 
     // Returns the server-prefixed folder name (e.g. "INBOX.ME-Processed" on Dreamhost).
@@ -142,8 +142,11 @@ actor IMAPClient {
     func ensureFolderExists(_ name: String) async throws {
         let tag = nextTag()
         try await send("\(tag) CREATE \"\(name)\"\r\n")
-        // Ignore errors — folder may already exist
-        try await drainToTaggedResponse(tag: tag)
+        // Drain response and ignore errors — ALREADYEXISTS is fine
+        while true {
+            let line = try await readLine()
+            if isTaggedOK(line, tag: tag) || isTaggedError(line, tag: tag) { break }
+        }
     }
 
     // MARK: - IDLE
@@ -246,18 +249,19 @@ actor IMAPClient {
         let crlf = Data([0x0D, 0x0A])
         let lf = Data([0x0A])
         while true {
-            // Check for CRLF
+            // Check for CRLF — use buf.startIndex, not 0: Data slices may have non-zero startIndex
+            // after removeFirst/removeSubrange, so hardcoding 0 would crash subdata(in:).
             if let range = buf.range(of: crlf) {
-                let lineData = buf.subdata(in: 0..<range.lowerBound)
-                buf.removeSubrange(0...range.upperBound - 1)
+                let lineData = Data(buf[buf.startIndex..<range.lowerBound])
+                buf = Data(buf[range.upperBound...])   // resets startIndex to 0
                 return String(data: lineData, encoding: .utf8) ?? String(data: lineData, encoding: .isoLatin1) ?? ""
             }
             // Check bare LF (some servers)
             if let range = buf.range(of: lf) {
-                let lineData = buf.subdata(in: 0..<range.lowerBound)
-                buf.removeSubrange(0...range.upperBound - 1)
-                return String(data: lineData, encoding: .utf8)?
-                    .trimmingCharacters(in: .init(charactersIn: "\r")) ?? ""
+                let lineData = Data(buf[buf.startIndex..<range.lowerBound])
+                buf = Data(buf[range.upperBound...])   // resets startIndex to 0
+                return (String(data: lineData, encoding: .utf8) ?? "")
+                    .trimmingCharacters(in: .init(charactersIn: "\r"))
             }
             try await awaitData()
         }
@@ -267,8 +271,9 @@ actor IMAPClient {
         while buf.count < n {
             try await awaitData()
         }
-        let result = Data(buf.prefix(n))
-        buf.removeFirst(n)
+        let end = buf.startIndex + n
+        let result = Data(buf[buf.startIndex..<end])
+        buf = Data(buf[end...])   // resets startIndex to 0
         return result
     }
 

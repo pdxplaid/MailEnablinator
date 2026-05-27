@@ -45,7 +45,7 @@ actor MailEngine {
             stateContinuation.yield(.connecting)
             await log("Connecting to \(await accountStore.imapHost)…")
             do {
-                try await buildClients()
+                await buildClients()
                 guard let imap else { return }
                 try await imap.connectAndLogin()
                 await log("Connected. Syncing inbox…", level: .success)
@@ -184,7 +184,17 @@ actor MailEngine {
     }
 
     private func processMessage(_ message: MailMessage, imap: IMAPClient) async throws {
+        // Log enough of the message to confirm what was received
+        let bodyPreview = String(message.plainBody.prefix(200))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        await log("From: \(message.from) | Subject: \"\(message.subject)\"")
+        if !bodyPreview.isEmpty {
+            await log("Body: \(bodyPreview)\(message.plainBody.count > 200 ? "…" : "")")
+        }
+        await log("Attachments: \(message.attachments.count) total, \(message.imageAttachments.count) image(s)")
+
         let allowedEmails = await allowedUsersStore.addresses
+        await log("Allowed senders: \(allowedEmails.isEmpty ? "(none configured)" : allowedEmails.joined(separator: ", "))")
         let defaultRmTag = await destinationStore.defaultRmTag
         let deleteAfter = await accountStore.deleteAfterProcessing
         let outcome = MailProcessor.process(
@@ -196,16 +206,17 @@ actor MailEngine {
 
         switch outcome {
         case .reject:
-            await log("Rejected email from unknown sender: \(message.from)")
+            await log("Outcome: REJECT — \(message.from) not in allowed list", level: .warning)
             try await imap.moveMessage(uid: message.uid, to: imap.folderName("ME-Rejected"))
 
         case .sendReply(let replyKey):
+            await log("Outcome: SEND REPLY (\(replyKey))")
             let body = await replyBody(for: replyKey)
             await sendReplyIfPossible(to: message.from, subject: "Re: \(message.subject)", body: body, inReplyTo: message.messageID)
-            await log("Sent reply to \(message.from): \(replyKey)", level: .info)
             try await applyServerAction(uid: message.uid, delete: deleteAfter, imap: imap)
 
         case .processImages(let inputs, let replyKey):
+            await log("Outcome: PROCESS \(inputs.count) IMAGE(S)\(replyKey != nil ? " + reply(\(replyKey!))" : "")")
             guard let destFolder = await destinationStore.resolveDestination() else {
                 await log("No destination folder configured — skipping image save.", level: .warning)
                 return
@@ -259,10 +270,31 @@ actor MailEngine {
     }
 
     private func sendReplyIfPossible(to: String, subject: String, body: String, inReplyTo: String?) async {
-        guard let smtp else { return }
+        let smtpHost = await accountStore.smtpHost
+        guard let smtp, !smtpHost.isEmpty else {
+            await log("SMTP not configured — skipping reply to \(to).", level: .warning)
+            return
+        }
         let from = await accountStore.imapUsername
+        await log("Sending reply to \(to) via \(smtpHost)…")
         do {
-            try await smtp.sendReply(from: from, to: to, subject: subject, body: body, inReplyTo: inReplyTo)
+            let capturedSmtp = smtp
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    try await capturedSmtp.sendReply(
+                        from: from, to: to, subject: subject, body: body, inReplyTo: inReplyTo
+                    )
+                }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(30))
+                    throw MailEngineError.smtpTimeout
+                }
+                try await group.next()
+                group.cancelAll()
+            }
+            await log("Reply sent to \(to).", level: .success)
+        } catch MailEngineError.smtpTimeout {
+            await log("Reply to \(to) timed out after 30s — check SMTP host/port/TLS settings.", level: .warning)
         } catch {
             await log("Failed to send reply to \(to): \(error.localizedDescription)", level: .warning)
         }

@@ -47,70 +47,90 @@ actor SMTPClient {
         body: String,
         inReplyTo: String?
     ) async throws {
+        smtpLog("Connecting to \(host):\(port) (TLS: \(useTLS))")
         try await connect()
-        defer { Task { await self.disconnect() } }
+        defer { Task { self.disconnect() } }
 
-        _ = try await readLine()  // 220 greeting
+        let greeting = try await readLine()
+        smtpLog("← \(greeting)")
         try await ehlo()
         try await authLogin()
         try await mailFrom(from)
         try await rcptTo(to)
         try await sendData(buildMessage(from: from, to: to, subject: subject, body: body, inReplyTo: inReplyTo))
         try await quit()
+        smtpLog("Done.")
     }
 
     // MARK: - SMTP commands
 
     private func ehlo() async throws {
+        smtpLog("→ EHLO")
         try await send("EHLO mailEnablinator\r\n")
-        // Drain multi-line 250 response
         while true {
             let line = try await readLine()
+            smtpLog("← \(line)")
             if line.hasPrefix("250 ") { break }
             if !line.hasPrefix("250-") { throw SMTPError.commandRejected(line) }
         }
     }
 
     private func authLogin() async throws {
+        smtpLog("→ AUTH LOGIN")
         try await send("AUTH LOGIN\r\n")
         let r1 = try await readLine()
+        smtpLog("← \(r1)")
         guard r1.hasPrefix("334") else { throw SMTPError.commandRejected(r1) }
         try await send(base64(username) + "\r\n")
         let r2 = try await readLine()
+        smtpLog("← \(r2)")
         guard r2.hasPrefix("334") else { throw SMTPError.commandRejected(r2) }
         try await send(base64(password) + "\r\n")
         let r3 = try await readLine()
+        smtpLog("← \(r3)")
         guard r3.hasPrefix("235") else { throw SMTPError.authenticationFailed }
+        smtpLog("Auth OK")
     }
 
     private func mailFrom(_ address: String) async throws {
+        smtpLog("→ MAIL FROM:<\(address)>")
         try await send("MAIL FROM:<\(address)>\r\n")
         let r = try await readLine()
+        smtpLog("← \(r)")
         guard r.hasPrefix("250") else { throw SMTPError.commandRejected(r) }
     }
 
     private func rcptTo(_ address: String) async throws {
+        smtpLog("→ RCPT TO:<\(address)>")
         try await send("RCPT TO:<\(address)>\r\n")
         let r = try await readLine()
+        smtpLog("← \(r)")
         guard r.hasPrefix("250") else { throw SMTPError.commandRejected(r) }
     }
 
     private func sendData(_ message: String) async throws {
+        smtpLog("→ DATA (\(message.utf8.count) bytes)")
         try await send("DATA\r\n")
         let r1 = try await readLine()
+        smtpLog("← \(r1)")
         guard r1.hasPrefix("354") else { throw SMTPError.commandRejected(r1) }
-        // Dot-stuff: lines starting with "." get an extra "."
         let stuffed = message.components(separatedBy: "\r\n")
             .map { $0.hasPrefix(".") ? ".\($0)" : $0 }
             .joined(separator: "\r\n")
         try await send(stuffed + "\r\n.\r\n")
         let r2 = try await readLine()
+        smtpLog("← \(r2)")
         guard r2.hasPrefix("250") else { throw SMTPError.commandRejected(r2) }
     }
 
     private func quit() async throws {
+        smtpLog("→ QUIT")
         try await send("QUIT\r\n")
         _ = try? await readLine()
+    }
+
+    private func smtpLog(_ msg: String) {
+        print("[SMTP] \(msg)")
     }
 
     // MARK: - Message building
@@ -199,8 +219,8 @@ Date: \(dateFormatter.string(from: .now))\r\nFrom: <\(from)>\r\nTo: <\(to)>\r\nS
         let crlf = Data([0x0D, 0x0A])
         while true {
             if let range = buf.range(of: crlf) {
-                let lineData = buf.subdata(in: 0..<range.lowerBound)
-                buf.removeSubrange(0...range.upperBound - 1)
+                let lineData = Data(buf[buf.startIndex..<range.lowerBound])
+                buf = Data(buf[range.upperBound...])   // resets startIndex to 0
                 return String(data: lineData, encoding: .utf8) ?? ""
             }
             try await awaitData()

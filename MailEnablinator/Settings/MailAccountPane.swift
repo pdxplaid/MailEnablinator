@@ -52,8 +52,20 @@ struct MailAccountPane: View {
                     .onSubmit { KeychainStore.save(smtpPassword, for: .smtpPassword) }
                 Toggle(
                     "Use Implicit TLS (SMTPS, port 465)",
-                    isOn: Binding(get: { store.smtpUseTLS }, set: { store.smtpUseTLS = $0 })
+                    isOn: Binding(
+                        get: { store.smtpUseTLS },
+                        set: { newValue in
+                            store.smtpUseTLS = newValue
+                            // Auto-suggest the canonical port when toggling TLS
+                            store.smtpPort = newValue ? 465 : 587
+                        }
+                    )
                 )
+                if !store.smtpUseTLS {
+                    Text("Note: STARTTLS (port 587) is not supported. Enable implicit TLS and use port 465.")
+                        .foregroundStyle(.orange)
+                        .font(.caption)
+                }
             }
 
             Section("Processing") {
