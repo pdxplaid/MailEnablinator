@@ -7,7 +7,11 @@ nonisolated enum MIMEParser {
     enum MIMEError: Error { case invalidMessage }
 
     static func parse(_ data: Data, uid: UInt32) -> MailMessage {
-        let raw = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
+        let decoded = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
+        // Normalize to LF-only throughout. CharacterSet.newlines splits \r and \n as two
+        // separate characters, which inserts phantom blank lines into reassembled multipart
+        // parts and causes splitHeadersAndBody to split mid-header on folded header lines.
+        let raw = decoded.replacing("\r\n", with: "\n")
         let (headerBlock, bodyBlock) = splitHeadersAndBody(raw)
         let headers = parseHeaders(headerBlock)
         let contentType = headers["content-type"] ?? "text/plain"

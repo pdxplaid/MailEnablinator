@@ -239,7 +239,9 @@ actor IMAPClient {
     }
 
     private func awaitData() async throws {
-        guard buf.isEmpty else { return }
+        // Do NOT guard on buf.isEmpty: if buf has partial data (< what the caller needs),
+        // returning early prevents the actor from yielding, so appendBuffer() can never
+        // run to deliver the next chunk. Always suspend and let appendBuffer() wake us.
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             waiter = cont
         }

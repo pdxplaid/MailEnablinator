@@ -209,7 +209,7 @@ Date: \(dateFormatter.string(from: .now))\r\nFrom: <\(from)>\r\nTo: <\(to)>\r\nS
     }
 
     private func awaitData() async throws {
-        guard buf.isEmpty else { return }
+        // Always suspend — see IMAPClient for explanation.
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             waiter = cont
         }
