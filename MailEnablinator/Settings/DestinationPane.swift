@@ -1,27 +1,35 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+private enum FolderTarget { case destination, archive }
+
 struct DestinationPane: View {
     @Environment(AppState.self) private var appState
-    @State private var showFolderPicker = false
+    @State private var showingPicker = false
+    @State private var pickerTarget: FolderTarget = .destination
 
     private var store: DestinationStore { appState.destinationStore }
 
     var body: some View {
         Form {
-            Section("Save Location") {
-                HStack {
-                    if let name = store.displayName {
-                        Label(name, systemImage: "folder.fill")
-                    } else {
-                        Text("No folder selected")
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Choose…", systemImage: "folder") {
-                        showFolderPicker = true
-                    }
-                }
+            Section("Saved Locations") {
+                FolderPickerRow(
+                    label: "Destination",
+                    path: store.destinationPath,
+                    onChoose: { pickerTarget = .destination; showingPicker = true }
+                )
+                FolderPickerRow(
+                    label: "Archives",
+                    path: store.archivePath,
+                    onChoose: { pickerTarget = .archive; showingPicker = true }
+                )
+                Toggle(
+                    "Put archived images into subfolders by date",
+                    isOn: Binding(
+                        get: { store.archiveUseDateSubfolders },
+                        set: { store.archiveUseDateSubfolders = $0 }
+                    )
+                )
             }
 
             Section {
@@ -42,11 +50,40 @@ struct DestinationPane: View {
             }
         }
         .formStyle(.grouped)
-        .fileImporter(isPresented: $showFolderPicker, allowedContentTypes: [.folder]) { result in
+        .fileImporter(isPresented: $showingPicker, allowedContentTypes: [.folder]) { result in
             guard case .success(let url) = result else { return }
             let didScope = url.startAccessingSecurityScopedResource()
-            store.saveDestination(url: url)
+            switch pickerTarget {
+            case .destination: store.saveDestination(url: url)
+            case .archive:     store.saveArchive(url: url)
+            }
             if didScope { url.stopAccessingSecurityScopedResource() }
+        }
+    }
+}
+
+private struct FolderPickerRow: View {
+    let label: String
+    let path: String?
+    let onChoose: () -> Void
+
+    var body: some View {
+        HStack {
+            Text(label)
+                .bold()
+                .frame(minWidth: 90, alignment: .leading)
+            if let path {
+                Label(path, systemImage: "folder.fill")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            } else {
+                Text("No folder selected")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Choose…", systemImage: "folder") {
+                onChoose()
+            }
         }
     }
 }

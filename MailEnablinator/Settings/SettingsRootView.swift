@@ -9,7 +9,7 @@ struct SettingsRootView: View {
                 UsersPane()
                     .environment(appState)
             }
-            Tab("Destination", systemImage: "folder") {
+            Tab("Files", systemImage: "folder") {
                 DestinationPane()
                     .environment(appState)
             }
