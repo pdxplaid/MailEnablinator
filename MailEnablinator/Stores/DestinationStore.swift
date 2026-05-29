@@ -5,13 +5,14 @@ import Observation
 @Observable
 final class DestinationStore {
     private enum Keys {
-        static let bookmark = "destinationBookmark"
-        static let displayName = "destinationDisplayName"
-        static let destinationPath = "destinationPath"
-        static let defaultRmTag = "destinationDefaultRmTag"
-        static let archiveBookmark = "archiveBookmark"
-        static let archivePath = "archivePath"
+        static let bookmark             = "destinationBookmark"
+        static let displayName          = "destinationDisplayName"
+        static let destinationPath      = "destinationPath"
+        static let defaultRmTag         = "destinationDefaultRmTag"
+        static let archiveBookmark      = "archiveBookmark"
+        static let archivePath          = "archivePath"
         static let archiveUseDateSubfolders = "archiveUseDateSubfolders"
+        static let cullInterval         = "cullInterval"
     }
 
     // MARK: - Destination
@@ -26,8 +27,14 @@ final class DestinationStore {
 
     var defaultRmTag: DefaultRmTag {
         get {
-            let raw = UserDefaults.standard.string(forKey: Keys.defaultRmTag) ?? DefaultRmTag.rm1D.rawValue
-            return DefaultRmTag(rawValue: raw) ?? .rm1D
+            let raw = UserDefaults.standard.string(forKey: Keys.defaultRmTag)
+                ?? DefaultRmTag.rm1D.rawValue
+            // Migrate legacy spaced values ("Rm 1D" → "Rm1D") on first read.
+            let normalized = raw.replacing(" ", with: "")
+            if normalized != raw {
+                UserDefaults.standard.set(normalized, forKey: Keys.defaultRmTag)
+            }
+            return DefaultRmTag(rawValue: normalized) ?? .rm1D
         }
         set {
             UserDefaults.standard.set(newValue.rawValue, forKey: Keys.defaultRmTag)
@@ -97,6 +104,18 @@ final class DestinationStore {
             return url
         } catch {
             return nil
+        }
+    }
+
+    // MARK: - Cull schedule
+
+    var cullInterval: CullInterval {
+        get {
+            let raw = UserDefaults.standard.string(forKey: Keys.cullInterval) ?? CullInterval.hour.rawValue
+            return CullInterval(rawValue: raw) ?? .hour
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: Keys.cullInterval)
         }
     }
 

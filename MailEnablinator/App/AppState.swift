@@ -9,6 +9,7 @@ final class AppState {
     let mailAccountStore = MailAccountStore()
     let repliesStore = RepliesStore()
     let activityLog = ActivityLogStore()
+    let culler: DestinationCuller
 
     private(set) var connectionState: ConnectionState = .disconnected
     private var mailEngine: MailEngine?
@@ -29,7 +30,10 @@ final class AppState {
     }
 
     init() {
+        let c = DestinationCuller(store: destinationStore, activityLog: activityLog)
+        culler = c
         startEngine()
+        Task { await c.start() }
     }
 
     func startEngine() {
@@ -58,6 +62,7 @@ final class AppState {
         mailEngine = nil
         connectionState = .disconnected
         startEngine()
+        Task { await culler.restart() }
     }
 
     func checkNow() async {

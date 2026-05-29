@@ -28,7 +28,7 @@ enum MailProcessor {
         let tags = HashtagParser.parse(message.plainBody)
         let caption = BodyTextCleaner.strip(message.plainBody)
         let keywords = tags
-        let hasRmTag = tags.contains(where: { $0.lowercased().hasPrefix("rm ") })
+        let hasRmTag = tags.contains(where: { RmTagParser.isRmTag($0) })
         let finderTags = hasRmTag ? keywords : keywords + [defaultRmTag.rawValue]
 
         let count = images.count

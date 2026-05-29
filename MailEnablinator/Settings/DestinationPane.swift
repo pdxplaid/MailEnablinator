@@ -48,6 +48,23 @@ struct DestinationPane: View {
             } header: {
                 Text("Default Finder Tag")
             }
+
+            Section {
+                Picker(
+                    "Check interval",
+                    selection: Binding(get: { store.cullInterval }, set: { store.cullInterval = $0 })
+                ) {
+                    ForEach(CullInterval.allCases, id: \.self) { interval in
+                        Text(interval.rawValue).tag(interval)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("How often the app checks the Destination folder for files ready to archive.")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            } header: {
+                Text("Cull Schedule")
+            }
         }
         .formStyle(.grouped)
         .fileImporter(isPresented: $showingPicker, allowedContentTypes: [.folder]) { result in
