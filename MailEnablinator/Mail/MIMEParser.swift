@@ -1,12 +1,17 @@
 import Foundation
+import os
 
 // Parses RFC 2822 / MIME email messages into MailMessage.
-// Handles: multipart/mixed, multipart/alternative, text/plain, image/*,
+// Handles: multipart/mixed, multipart/alternative, multipart/related,
+// text/plain, text/html (HTML → plain text fallback), image/*,
 // base64 and quoted-printable transfer encodings, RFC 2047 encoded-word headers.
 nonisolated enum MIMEParser {
     enum MIMEError: Error { case invalidMessage }
 
-    static func parse(_ data: Data, uid: UInt32) -> MailMessage {
+    private static let logger = Logger(subsystem: "com.plaidapps.MailEnablinator", category: "MIMEParser")
+
+    // Returns the parsed message plus a one-line debug summary for the activity log.
+    static func parse(_ data: Data, uid: UInt32) -> (message: MailMessage, debugInfo: String) {
         let decoded = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
         // Normalize to LF-only throughout. CharacterSet.newlines splits \r and \n as two
         // separate characters, which inserts phantom blank lines into reassembled multipart
@@ -21,16 +26,33 @@ nonisolated enum MIMEParser {
         let date = parseDate(headers["date"] ?? "")
 
         var plainBody = ""
+        var htmlBody = ""
         var attachments: [MailAttachment] = []
         parseBody(
             body: bodyBlock,
             contentType: contentType,
             headers: headers,
             plainBody: &plainBody,
+            htmlBody: &htmlBody,
             attachments: &attachments
         )
 
-        return MailMessage(
+        // iOS Mail often sends only text/html (no text/plain) when the email contains
+        // an inline image. Use the HTML part as a plain-text fallback so body text and
+        // hashtags (e.g. #Rm2H) are not silently discarded.
+        let htmlFallbackFired: Bool
+        if plainBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !htmlBody.isEmpty {
+            plainBody = htmlToPlainText(htmlBody)
+            htmlFallbackFired = true
+        } else {
+            htmlFallbackFired = false
+        }
+
+        let tree = mimeTree(body: bodyBlock, contentType: contentType, depth: 0)
+        let debugInfo = "ct=\(contentType.prefix(80)) raw=\(data.count)B plain=\(plainBody.count)ch html=\(htmlBody.count)ch htmlFallback=\(htmlFallbackFired)\nMIME tree:\n\(tree)"
+        logger.debug("uid=\(uid) \(debugInfo)")
+
+        let message = MailMessage(
             uid: uid,
             from: extractEmail(from),
             subject: subject,
@@ -39,6 +61,36 @@ nonisolated enum MIMEParser {
             messageID: messageID,
             date: date
         )
+        return (message, debugInfo)
+    }
+
+    // MARK: - MIME tree (diagnostic only)
+
+    private static func mimeTree(body: String, contentType: String, depth: Int) -> String {
+        let indent = String(repeating: "  ", count: depth)
+        let ctShort = contentType.prefix(80)
+        var out = "\(indent)[\(ctShort)]\n"
+        let ct = contentType.lowercased()
+        guard ct.hasPrefix("multipart/") else { return out }
+        guard let boundary = extractParameter("boundary", from: contentType) else {
+            return out + "\(indent)  (no boundary extracted)\n"
+        }
+        let parts = splitMultipart(body, boundary: boundary)
+        if parts.isEmpty {
+            out += "\(indent)  (0 parts found for boundary=\(boundary.prefix(40)))\n"
+        }
+        for (i, part) in parts.enumerated() {
+            let (ph, pb) = splitHeadersAndBody(part)
+            let parsedHeaders = parseHeaders(ph)
+            let partCT = parsedHeaders["content-type"] ?? "(no content-type)"
+            let partDisp = parsedHeaders["content-disposition"] ?? ""
+            let dispNote = partDisp.isEmpty ? "" : " disp=\(partDisp.prefix(30))"
+            out += "\(indent)  Part \(i + 1): \(partCT.prefix(70))\(dispNote)\n"
+            if partCT.lowercased().hasPrefix("multipart/") {
+                out += mimeTree(body: pb, contentType: partCT, depth: depth + 2)
+            }
+        }
+        return out
     }
 
     // MARK: - Body dispatch
@@ -48,6 +100,7 @@ nonisolated enum MIMEParser {
         contentType: String,
         headers: [String: String],
         plainBody: inout String,
+        htmlBody: inout String,
         attachments: inout [MailAttachment]
     ) {
         let ct = contentType.lowercased()
@@ -59,13 +112,20 @@ nonisolated enum MIMEParser {
                 let parsedHeaders = parseHeaders(partHeaders)
                 let partCT = parsedHeaders["content-type"] ?? "text/plain"
                 let disposition = parsedHeaders["content-disposition"] ?? ""
-                if partCT.lowercased().hasPrefix("multipart/") {
+                let partCTLower = partCT.lowercased()
+                if partCTLower.hasPrefix("multipart/") {
                     parseBody(body: partBody, contentType: partCT, headers: parsedHeaders,
-                              plainBody: &plainBody, attachments: &attachments)
-                } else if partCT.lowercased().hasPrefix("text/plain") && !disposition.lowercased().contains("attachment") {
-                    let decoded = decodeTransferEncoding(partBody, encoding: parsedHeaders["content-transfer-encoding"] ?? "7bit")
-                    if plainBody.isEmpty { plainBody = decoded }
-                } else if partCT.lowercased().hasPrefix("image/") || disposition.lowercased().contains("attachment") {
+                              plainBody: &plainBody, htmlBody: &htmlBody, attachments: &attachments)
+                } else if partCTLower.hasPrefix("text/plain") && !disposition.lowercased().contains("attachment") {
+                    let dec = decodeTransferEncoding(partBody, encoding: parsedHeaders["content-transfer-encoding"] ?? "7bit")
+                    // Concatenate all text/plain parts. iOS Mail splits body text before and after
+                    // an inline image into separate text/plain parts; taking only the first silently
+                    // drops the user's text (and any hashtag tags) that appear after the image.
+                    plainBody += plainBody.isEmpty ? dec : "\n\(dec)"
+                } else if partCTLower.hasPrefix("text/html") && !disposition.lowercased().contains("attachment") {
+                    let dec = decodeTransferEncoding(partBody, encoding: parsedHeaders["content-transfer-encoding"] ?? "7bit")
+                    if htmlBody.isEmpty { htmlBody = dec }
+                } else if partCTLower.hasPrefix("image/") || disposition.lowercased().contains("attachment") {
                     if let att = buildAttachment(headers: parsedHeaders, body: partBody, fallbackCT: partCT) {
                         attachments.append(att)
                     }
@@ -74,11 +134,36 @@ nonisolated enum MIMEParser {
         } else if ct.hasPrefix("text/plain") {
             let encoding = headers["content-transfer-encoding"] ?? "7bit"
             plainBody = decodeTransferEncoding(body, encoding: encoding)
+        } else if ct.hasPrefix("text/html") {
+            let encoding = headers["content-transfer-encoding"] ?? "7bit"
+            htmlBody = decodeTransferEncoding(body, encoding: encoding)
         } else if ct.hasPrefix("image/") {
             if let att = buildAttachment(headers: headers, body: body, fallbackCT: contentType) {
                 attachments.append(att)
             }
         }
+    }
+
+    // MARK: - HTML → plain text
+
+    // Strips HTML tags and decodes common entities so the resulting plain text
+    // can be parsed for hashtags and used as an IPTC caption.
+    private static func htmlToPlainText(_ html: String) -> String {
+        var text = html
+        // Strip all HTML tags (including attributes).
+        text = text.replacing(/<[^>]*>/, with: " ")
+        // Decode the handful of HTML entities that appear in typical Apple Mail bodies.
+        text = text
+            .replacing("&amp;",  with: "&")
+            .replacing("&lt;",   with: "<")
+            .replacing("&gt;",   with: ">")
+            .replacing("&quot;", with: "\"")
+            .replacing("&#39;",  with: "'")
+            .replacing("&apos;", with: "'")
+            .replacing("&nbsp;", with: " ")
+        // Collapse all runs of whitespace to a single space.
+        text = text.replacing(/\s+/, with: " ")
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Part construction

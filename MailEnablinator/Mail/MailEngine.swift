@@ -177,7 +177,10 @@ actor MailEngine {
     private func fetchAndProcess(uids: [UInt32], imap: IMAPClient) async throws {
         let rawMessages = try await imap.fetchRawMessages(uids: uids)
         for (uid, data) in rawMessages {
-            let message = MIMEParser.parse(data, uid: uid)
+            let (message, mimeDebug) = MIMEParser.parse(data, uid: uid)
+            for line in mimeDebug.components(separatedBy: "\n") where !line.isEmpty {
+                await log("MIME[\(uid)]: \(line)")
+            }
             try await processMessage(message, imap: imap)
             if uid > lastProcessedUID { lastProcessedUID = uid }
         }

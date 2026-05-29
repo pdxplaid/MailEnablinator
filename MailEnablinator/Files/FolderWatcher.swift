@@ -7,11 +7,11 @@ import Foundation
 final class FolderWatcher: @unchecked Sendable {
     nonisolated(unsafe) private var eventStream: FSEventStreamRef?
     nonisolated(unsafe) private var continuation: AsyncStream<Void>.Continuation?
-    nonisolated(unsafe) private let fsQueue = DispatchQueue(
+    private let fsQueue = DispatchQueue(
         label: "com.plaidapps.MailEnablinator.fsevents",
         qos: .utility
     )
-    nonisolated(unsafe) let changes: AsyncStream<Void>
+    let changes: AsyncStream<Void>
 
     nonisolated init() {
         var cont: AsyncStream<Void>.Continuation!

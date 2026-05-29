@@ -40,7 +40,7 @@ actor DestinationCuller {
         }
 
         // First pass at launch so overdue files aren't stuck until the first tick.
-        Task { await self.triggerEvaluate() }
+        Task { self.triggerEvaluate() }
     }
 
     func stop() {
